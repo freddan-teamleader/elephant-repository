@@ -51,7 +51,7 @@ TODO: write and link to workflow rule documentation, see presentation.slide
 All changes to a document are emitted on the eventlog, accessed through `Documents.Eventlog`. Changes can be:
 
 * a new document version
-* anew document status
+* a new document status
 * updated ACL entries
 * a document delete
 
