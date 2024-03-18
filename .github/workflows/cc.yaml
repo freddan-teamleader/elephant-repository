@@ -5,10 +5,19 @@ on:
 
 jobs:
   coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latests
     steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '1.21.6'
+          cache: true
+      - name: Run coverage
+        run: go test -race -coverprofile=coverage.out -covermode=atomic
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: freddan-teamleader/elephant-repository
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
