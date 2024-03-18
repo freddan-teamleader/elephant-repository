@@ -2,6 +2,8 @@
 
 ![Image](docs/elephant.png?raw=true)
 
+[![codecov](https://codecov.io/gh/freddan-teamleader/elephant-repository/graph/badge.svg?token=KYPATA7G9D)](https://codecov.io/gh/freddan-teamleader/elephant-repository)
+
 Elephant repository is a [NewsDoc](https://github.com/ttab/newsdoc) document repository with versioning, ACLs for permissions, archiving, validation schemas, workflow statuses, reporting support, event output, and metrics for observability.
 
 The repository depends on PostgreSQL for data storage and a S3 compatible store for archiving and reports. It can use AWS EventBridge as an event sink, but that is optional and can be disabled with `--no-eventsink`.
