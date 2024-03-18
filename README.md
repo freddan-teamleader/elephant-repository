@@ -61,7 +61,7 @@ This eventlog can be used by other applications to act on changes in the reposit
 
 ### Event sink
 
-The repository also has the concept of event sinks where enriched events can be posted to an event sink (right now only we only support AWS EventBridge as a sink).
+The repository also has the concept of event sinks where enriched events can be posted to an event sink (right now we only support AWS EventBridge as a sink).
 
 The purpose of the enriched events is to allow the constructions of event-based architectures where f.ex. a Lambda function could subscribe to published articles with a specific category. This let's you avoid situations where a lot of systems load unnecessary just to determine if an event should be handled.
 
