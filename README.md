@@ -3,6 +3,8 @@
 ![Image](docs/elephant.png?raw=true)
 
 [![codecov](https://codecov.io/gh/freddan-teamleader/elephant-repository/graph/badge.svg?token=KYPATA7G9D)](https://codecov.io/gh/freddan-teamleader/elephant-repository)
+[![Known Vulnerabilities](https://snyk.io/test/github/freddan-teamleader/elephant-repository/badge.svg)](https://snyk.io/test/github/freddan-teamleader/elephant-repository)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Elephant repository is a [NewsDoc](https://github.com/ttab/newsdoc) document repository with versioning, ACLs for permissions, archiving, validation schemas, workflow statuses, reporting support, event output, and metrics for observability.
 
