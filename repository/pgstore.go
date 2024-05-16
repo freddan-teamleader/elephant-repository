@@ -39,10 +39,11 @@ type PGDocStore struct {
 	reader *postgres.Queries
 	opts   PGDocStoreOptions
 
-	archived  *FanOut[ArchivedEvent]
-	schemas   *FanOut[SchemaEvent]
-	workflows *FanOut[WorkflowEvent]
-	eventlog  *FanOut[int64]
+	archived     *FanOut[ArchivedEvent]
+	schemas      *FanOut[SchemaEvent]
+	deprecations *FanOut[DeprecationEvent]
+	workflows    *FanOut[WorkflowEvent]
+	eventlog     *FanOut[int64]
 }
 
 func NewPGDocStore(
@@ -54,14 +55,15 @@ func NewPGDocStore(
 	}
 
 	return &PGDocStore{
-		logger:    logger,
-		pool:      pool,
-		reader:    postgres.New(pool),
-		opts:      options,
-		archived:  NewFanOut[ArchivedEvent](),
-		schemas:   NewFanOut[SchemaEvent](),
-		workflows: NewFanOut[WorkflowEvent](),
-		eventlog:  NewFanOut[int64](),
+		logger:       logger,
+		pool:         pool,
+		reader:       postgres.New(pool),
+		opts:         options,
+		archived:     NewFanOut[ArchivedEvent](),
+		schemas:      NewFanOut[SchemaEvent](),
+		deprecations: NewFanOut[DeprecationEvent](),
+		workflows:    NewFanOut[WorkflowEvent](),
+		eventlog:     NewFanOut[int64](),
 	}, nil
 }
 
@@ -90,6 +92,20 @@ func (s *PGDocStore) OnSchemaUpdate(
 	ctx context.Context, ch chan SchemaEvent,
 ) {
 	go s.schemas.Listen(ctx, ch, func(_ SchemaEvent) bool {
+		return true
+	})
+}
+
+// OnSchemaUpdate notifies the channel ch of all schema updates. Subscription is
+// automatically cancelled once the context is cancelled.
+//
+// Note that we don't provide any delivery guarantees for these events.
+// non-blocking send is used on ch, so if it's unbuffered events will be
+// discarded if the receiver is busy.
+func (s *PGDocStore) OnDeprecationUpdate(
+	ctx context.Context, ch chan DeprecationEvent,
+) {
+	go s.deprecations.Listen(ctx, ch, func(_ DeprecationEvent) bool {
 		return true
 	})
 }
@@ -160,6 +176,7 @@ func (s *PGDocStore) runListener(ctx context.Context) error {
 	notifications := []NotifyChannel{
 		NotifyArchived,
 		NotifySchemasUpdated,
+		NotifyDeprecationsUpdated,
 		NotifyWorkflowsUpdated,
 		NotifyEventlog,
 	}
@@ -195,7 +212,7 @@ func (s *PGDocStore) runListener(ctx context.Context) error {
 
 			select {
 			case <-ctx.Done():
-				return ctx.Err() //nolint:wrapcheck
+				return ctx.Err()
 			case notification = <-received:
 			}
 
@@ -210,6 +227,16 @@ func (s *PGDocStore) runListener(ctx context.Context) error {
 				}
 
 				s.schemas.Notify(e)
+			case NotifyDeprecationsUpdated:
+				var e DeprecationEvent
+
+				err := json.Unmarshal(
+					[]byte(notification.Payload), &e)
+				if err != nil {
+					break
+				}
+
+				s.deprecations.Notify(e)
 			case NotifyArchived:
 				var e ArchivedEvent
 
@@ -955,45 +982,14 @@ func (s *PGDocStore) Update(
 
 	for _, state := range updates {
 		if state.Doc != nil {
-			state.Version++
 			state.Language = state.Doc.Language
 
-			err := q.UpsertDocument(ctx, postgres.UpsertDocumentParams{
-				UUID:       state.Request.UUID,
-				URI:        state.Doc.URI,
-				Type:       state.Doc.Type,
-				Version:    state.Version,
-				Created:    pg.Time(state.Created),
-				CreatorUri: state.Creator,
-				Language:   pg.TextOrNull(state.Doc.Language),
-				MainDoc:    pg.PUUID(state.Request.MainDocument),
-			})
+			version, err := s.createNewDocumentVersion(ctx, tx, q, state)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"failed to create document in database: %w", err)
+				return nil, err
 			}
 
-			err = q.CreateDocumentVersion(ctx, postgres.CreateDocumentVersionParams{
-				UUID:         state.Request.UUID,
-				Version:      state.Version,
-				Created:      pg.Time(state.Created),
-				CreatorUri:   state.Creator,
-				Meta:         state.MetaJSON,
-				DocumentData: state.DocJSON,
-			})
-			if err != nil {
-				return nil, fmt.Errorf(
-					"failed to create version in database: %w", err)
-			}
-
-			if state.Doc.Type == "core/planning-item" {
-				err = planning.UpdateDatabase(ctx, tx,
-					*state.Doc, state.Version)
-				if err != nil {
-					return nil, fmt.Errorf(
-						"failed to update planning data: %w", err)
-				}
-			}
+			state.Version = version
 		}
 
 		var metaDocVersion int64
@@ -1124,6 +1120,57 @@ func (s *PGDocStore) Update(
 	}
 
 	return res, nil
+}
+
+func (s *PGDocStore) createNewDocumentVersion(
+	ctx context.Context,
+	tx pgx.Tx,
+	q *postgres.Queries,
+	state *docUpdateState,
+) (int64, error) {
+	version := state.Version + 1
+
+	err := q.UpsertDocument(ctx, postgres.UpsertDocumentParams{
+		UUID:       state.Request.UUID,
+		URI:        state.Doc.URI,
+		Type:       state.Doc.Type,
+		Version:    version,
+		Created:    pg.Time(state.Created),
+		CreatorUri: state.Creator,
+		Language:   pg.TextOrNull(state.Doc.Language),
+		MainDoc:    pg.PUUID(state.Request.MainDocument),
+	})
+	if pg.IsConstraintError(err, "document_uri_key") {
+		return 0, DocStoreErrorf(ErrCodeDuplicateURI,
+			"duplicate URI: %s", state.Doc.URI)
+	} else if err != nil {
+		return 0, fmt.Errorf(
+			"failed to create document in database: %w", err)
+	}
+
+	err = q.CreateDocumentVersion(ctx, postgres.CreateDocumentVersionParams{
+		UUID:         state.Request.UUID,
+		Version:      version,
+		Created:      pg.Time(state.Created),
+		CreatorUri:   state.Creator,
+		Meta:         state.MetaJSON,
+		DocumentData: state.DocJSON,
+	})
+	if err != nil {
+		return 0, fmt.Errorf(
+			"failed to create version in database: %w", err)
+	}
+
+	if state.Doc.Type == "core/planning-item" {
+		err = planning.UpdateDatabase(ctx, tx,
+			*state.Doc, version)
+		if err != nil {
+			return 0, fmt.Errorf(
+				"failed to update planning data: %w", err)
+		}
+	}
+
+	return version, nil
 }
 
 type docUpdateState struct {
@@ -1286,10 +1333,13 @@ func (s *PGDocStore) UpdateStatus(
 			return fmt.Errorf("failed to update status: %w", err)
 		}
 
-		notifyWorkflowUpdated(ctx, s.logger, q, WorkflowEvent{
+		err = notifyWorkflowUpdated(ctx, s.logger, q, WorkflowEvent{
 			Type: WorkflowEventTypeStatusChange,
 			Name: req.Name,
 		})
+		if err != nil {
+			return fmt.Errorf("failed to send workflow update notification: %w", err)
+		}
 
 		return nil
 	})
@@ -1340,10 +1390,13 @@ func (s *PGDocStore) UpdateStatusRule(
 			return fmt.Errorf("failed to update status rule: %w", err)
 		}
 
-		notifyWorkflowUpdated(ctx, s.logger, q, WorkflowEvent{
+		err = notifyWorkflowUpdated(ctx, s.logger, q, WorkflowEvent{
 			Type: WorkflowEventTypeStatusRuleChange,
 			Name: rule.Name,
 		})
+		if err != nil {
+			return fmt.Errorf("failed to send workflow update notification: %w", err)
+		}
 
 		return nil
 	})
@@ -1692,10 +1745,13 @@ func (s *PGDocStore) activateSchema(
 			"failed to activate schema version: %w", err)
 	}
 
-	notifySchemaUpdated(ctx, s.logger, q, SchemaEvent{
+	err = notifySchemaUpdated(ctx, s.logger, q, SchemaEvent{
 		Type: SchemaEventTypeActivation,
 		Name: name,
 	})
+	if err != nil {
+		return fmt.Errorf("failed to send schema update notification: %w", err)
+	}
 
 	return nil
 }
@@ -1744,10 +1800,13 @@ func (s *PGDocStore) DeactivateSchema(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to remove active schema: %w", err)
 	}
 
-	notifySchemaUpdated(ctx, s.logger, q, SchemaEvent{
+	err = notifySchemaUpdated(ctx, s.logger, q, SchemaEvent{
 		Type: SchemaEventTypeDeactivation,
 		Name: name,
 	})
+	if err != nil {
+		return fmt.Errorf("failed to send schema update notification: %w", err)
+	}
 
 	err = tx.Commit(ctx)
 	if err != nil {
@@ -1826,6 +1885,79 @@ func (s *PGDocStore) GetSchema(
 		Version:       schema.Version,
 		Specification: spec,
 	}, nil
+}
+
+type EnforcedDeprecations map[string]bool
+
+// GetEnforcedDeprecations implements SchemaLoader.
+func (s *PGDocStore) GetEnforcedDeprecations(
+	ctx context.Context,
+) (EnforcedDeprecations, error) {
+	rows, err := s.reader.GetEnforcedDeprecations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch enforced deprecations: %w", err)
+	}
+
+	res := make(EnforcedDeprecations, len(rows))
+
+	for _, l := range rows {
+		res[l] = true
+	}
+
+	return res, nil
+}
+
+// GetDeprecations implements SchemaLoader.
+func (s *PGDocStore) GetDeprecations(
+	ctx context.Context,
+) ([]*Deprecation, error) {
+	rows, err := s.reader.GetDeprecations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch deprecations: %w", err)
+	}
+
+	var res []*Deprecation
+
+	for i := range rows {
+		deprecation := &Deprecation{
+			Label:    rows[i].Label,
+			Enforced: rows[i].Enforced,
+		}
+
+		res = append(res, deprecation)
+	}
+
+	return res, nil
+}
+
+// UpdateDeprecation implements SchemaLoader.
+func (s *PGDocStore) UpdateDeprecation(
+	ctx context.Context, deprecation Deprecation,
+) error {
+	err := s.withTX(ctx, "update deprecation", func(tx pgx.Tx) error {
+		q := postgres.New(tx)
+
+		err := q.UpdateDeprecation(ctx, postgres.UpdateDeprecationParams{
+			Label:    deprecation.Label,
+			Enforced: deprecation.Enforced,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to save deprecation to database: %w", err)
+		}
+
+		err = notifyDeprecationUpdated(ctx, s.logger, q,
+			DeprecationEvent{Label: deprecation.Label})
+		if err != nil {
+			return fmt.Errorf("failed to send deprecation update notification: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type ReportListItem struct {

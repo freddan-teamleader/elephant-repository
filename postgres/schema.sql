@@ -209,6 +209,16 @@ ALTER TABLE public.delete_record ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTIT
 
 
 --
+-- Name: deprecation; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.deprecation (
+    label text NOT NULL,
+    enforced boolean NOT NULL
+);
+
+
+--
 -- Name: document; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -568,6 +578,14 @@ ALTER TABLE ONLY public.active_schemas
 
 ALTER TABLE ONLY public.delete_record
     ADD CONSTRAINT delete_record_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: deprecation deprecation_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.deprecation
+    ADD CONSTRAINT deprecation_pkey PRIMARY KEY (label);
 
 
 --

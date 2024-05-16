@@ -169,7 +169,7 @@ Then create a ".env" file containing the following values:
 S3_ENDPOINT=http://localhost:9000/
 S3_ACCESS_KEY_ID=minioadmin
 S3_ACCESS_KEY_SECRET=minioadmin
-JWT_SIGNING_KEY='MIGkAgEBBDAgdjcifmVXiJoQh7IbTnsCS81CxYHQ1r6ftXE6ykJDz1SoQJEB6LppaCLpNBJhGNugBwYFK4EEACKhZANiAAS4LqvuFUwFXUNpCPTtgeMy61hE-Pdm57OVzTaVKUz7GzzPKNoGbcTllPGDg7nzXIga9ObRNs8ytSLQMOWIO8xJW35Xko4kwPR_CVsTS5oMaoYnBCOZYEO2NXND7gU7GoM'
+MOCK_JWT_SIGNING_KEY='MIGkAgEBBDAgdjcifmVXiJoQh7IbTnsCS81CxYHQ1r6ftXE6ykJDz1SoQJEB6LppaCLpNBJhGNugBwYFK4EEACKhZANiAAS4LqvuFUwFXUNpCPTtgeMy61hE-Pdm57OVzTaVKUz7GzzPKNoGbcTllPGDg7nzXIga9ObRNs8ytSLQMOWIO8xJW35Xko4kwPR_CVsTS5oMaoYnBCOZYEO2NXND7gU7GoM'
 ```
 
 The server will generate and a JWT signing key (and log a warning) if it's missing from the environment.
@@ -179,7 +179,7 @@ The server will generate and a JWT signing key (and log a warning) if it's missi
 The repository server runs the API, archiver, and replicator. If your environment has been set up correctly (env vars, postgres, and minio) you should be able to run it like this:
 
 ``` shell
-go run ./cmd/repository run
+go run ./cmd/repository run --mock-jwt-endpoint
 ```
 
 ## The database
@@ -188,15 +188,17 @@ go run ./cmd/repository run
 
 The repository uses [mage](https://magefile.org/) as a task runner. Start a local postgres instance using the `mage sql:postgres pg16`. Create a database using `mage sql:db`.
 
-The database schema is defined using numbered [tern](https://github.com/jackc/tern) migrations in "./schema/". Initialise the schema by running `mage sql:migrate`.
+The database schema is defined using numbered [tern](https://github.com/jackc/tern) migrations in "./schema/". Initialise the schema by running `mage sql:migrate`. Set the `CONN_STRING` environment variable to run the `mage sql:*` operations against a remote database.
 
-Create a reporting role for the reports subsystem using `mage reportinguser`. Add the necessary replication permission using `mage replicationpermissions`.
+Create a reporting role for the reports subsystem using `mage reportinguser`. Add the necessary replication permission using `mage replicationpermissions`. These operations can't be executed against a remote database, as they make assumptions about database and user names.
 
 Start a local minio instance and the necessary buckets using `mage s3:minio s3:bucket elephant-archive s3:bucket elephant-reports`.
 
 Queries are defined in "./postgres/query.sql" and are compiled using [sqlc](https://sqlc.dev/) to a `Queries` struct in "./postgres/query.go". Run `make sql:generate` to compile queries.
 
 Use `mage sql:rollback 0` to undo all migrations, to migrate to a specific version, f.ex. 7, use `mage sql:rollback 7`.
+
+Connect to the local database using `psql $(mage connstring)` or `psql postgres://elephant-repository:pass@localhost/elephant-repository`.
 
 ### Introduction to the schema
 

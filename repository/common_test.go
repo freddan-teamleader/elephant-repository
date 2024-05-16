@@ -271,8 +271,10 @@ func testingAPIServer(
 	}
 
 	validator, err := repository.NewValidator(
-		ctx, logger, store)
+		ctx, logger, store, prometheus.NewRegistry())
 	test.Must(t, err, "create validator")
+
+	t.Cleanup(validator.Stop)
 
 	workflows, err := repository.NewWorkflows(ctx, logger, store)
 	test.Must(t, err, "create workflows")
@@ -301,10 +303,12 @@ func testingAPIServer(
 		return auth.Claims.Scope
 	})
 
-	srvOpts.SetJWTValidation(jwtKey)
+	srvOpts.SetJWTValidation(elephantine.NewStaticAuthInfoParser(jwtKey.PublicKey, elephantine.AuthInfoParserOptions{
+		Issuer: "test",
+	}))
 
 	err = repository.SetUpRouter(router,
-		repository.WithTokenEndpoint(jwtKey, opts.SharedSecret),
+		repository.WithTokenEndpoint(jwtKey, opts.SharedSecret, "test", ""),
 		repository.WithDocumentsAPI(docService, srvOpts),
 		repository.WithSchemasAPI(schemaService, srvOpts),
 		repository.WithWorkflowsAPI(workflowService, srvOpts),
