@@ -1,8 +1,9 @@
 # Elephant repository
 
-![Image](docs/elephant.png?raw=true)
+![Image](docs/elephant.png)
 
-[![codecov](https://codecov.io/gh/freddan-teamleader/elephant-repository/graph/badge.svg?token=KYPATA7G9D)](https://codecov.io/gh/freddan-teamleader/elephant-repository)
+[![Coverage Status](https://coveralls.io/repos/github/dimelords/elephant-repository/badge.svg?branch=main)](https://coveralls.io/github/dimelords/elephant-repository?branch=main)
+[![codecov](https://codecov.io/gh/dimelords/elephant-repository/graph/badge.svg?token=KYPATA7G9D)](https://codecov.io/gh/freddan-teamleader/elephant-repository)
 [![Known Vulnerabilities](https://snyk.io/test/github/freddan-teamleader/elephant-repository/badge.svg)](https://snyk.io/test/github/freddan-teamleader/elephant-repository)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
