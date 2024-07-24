@@ -21,19 +21,26 @@ func (f *FanOut[T]) Listen(ctx context.Context, l chan T, test func(v T) bool) {
 	f.listeners[l] = test
 	f.m.Unlock()
 
-	<-ctx.Done()
-
-	f.m.Lock()
-	delete(f.listeners, l)
-	f.m.Unlock()
+	go func() {
+		<-ctx.Done()
+		f.m.Lock()
+		delete(f.listeners, l)
+		f.m.Unlock()
+	}()
 }
 
 func (f *FanOut[T]) Notify(msg T) {
 	f.m.RLock()
-	defer f.m.RUnlock()
-
+	listeners := make([]chan T, 0, len(f.listeners))
+	tests := make([]func(v T) bool, 0, len(f.listeners))
 	for listener, test := range f.listeners {
-		if !test(msg) {
+		listeners = append(listeners, listener)
+		tests = append(tests, test)
+	}
+	f.m.RUnlock()
+
+	for i, listener := range listeners {
+		if !tests[i](msg) {
 			continue
 		}
 
