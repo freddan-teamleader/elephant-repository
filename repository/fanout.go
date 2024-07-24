@@ -33,6 +33,7 @@ func (f *FanOut[T]) Notify(msg T) {
 	f.m.RLock()
 	listeners := make([]chan T, 0, len(f.listeners))
 	tests := make([]func(v T) bool, 0, len(f.listeners))
+
 	for listener, test := range f.listeners {
 		listeners = append(listeners, listener)
 		tests = append(tests, test)
