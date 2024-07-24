@@ -16,14 +16,15 @@ type Acl struct {
 }
 
 type AclAudit struct {
-	ID         int64
-	UUID       uuid.UUID
-	Updated    pgtype.Timestamptz
-	UpdaterUri string
-	State      []byte
-	Archived   bool
-	Type       pgtype.Text
-	Language   pgtype.Text
+	ID          int64
+	UUID        uuid.UUID
+	Updated     pgtype.Timestamptz
+	UpdaterUri  string
+	State       []byte
+	Archived    bool
+	Type        pgtype.Text
+	Language    pgtype.Text
+	SystemState pgtype.Text
 }
 
 type ActiveSchema struct {
@@ -32,16 +33,21 @@ type ActiveSchema struct {
 }
 
 type DeleteRecord struct {
-	ID         int64
-	UUID       uuid.UUID
-	URI        string
-	Type       string
-	Version    int64
-	Created    pgtype.Timestamptz
-	CreatorUri string
-	Meta       []byte
-	MainDoc    pgtype.UUID
-	Language   pgtype.Text
+	ID            int64
+	UUID          uuid.UUID
+	URI           string
+	Type          string
+	Version       int64
+	Created       pgtype.Timestamptz
+	CreatorUri    string
+	Meta          []byte
+	MainDoc       pgtype.UUID
+	Language      pgtype.Text
+	MetaDocRecord pgtype.Int8
+	Finalised     pgtype.Timestamptz
+	Acl           []byte
+	Heads         []byte
+	Purged        pgtype.Timestamptz
 }
 
 type Deprecation struct {
@@ -58,9 +64,9 @@ type Document struct {
 	Updated        pgtype.Timestamptz
 	UpdaterUri     string
 	CurrentVersion int64
-	Deleting       bool
 	MainDoc        pgtype.UUID
 	Language       pgtype.Text
+	SystemState    pgtype.Text
 }
 
 type DocumentLink struct {
@@ -109,6 +115,7 @@ type DocumentVersion struct {
 	DocumentData []byte
 	Archived     bool
 	Signature    pgtype.Text
+	Language     pgtype.Text
 }
 
 type Eventlog struct {
@@ -125,6 +132,7 @@ type Eventlog struct {
 	MainDoc     pgtype.UUID
 	Language    pgtype.Text
 	OldLanguage pgtype.Text
+	SystemState pgtype.Text
 }
 
 type Eventsink struct {
@@ -205,11 +213,39 @@ type PlanningItem struct {
 	Event       pgtype.UUID
 }
 
+type PurgeRequest struct {
+	ID             int64
+	UUID           uuid.UUID
+	DeleteRecordID int64
+	Created        pgtype.Timestamptz
+	Creator        string
+	Finished       pgtype.Timestamptz
+}
+
 type Report struct {
 	Name          string
 	Enabled       bool
 	NextExecution pgtype.Timestamptz
 	Spec          []byte
+}
+
+type Restore struct {
+	ID         int64
+	UUID       uuid.UUID
+	DeleteID   int64
+	Created    pgtype.Timestamptz
+	CreatorUri string
+	Acls       []byte
+}
+
+type RestoreRequest struct {
+	ID             int64
+	UUID           uuid.UUID
+	DeleteRecordID int64
+	Created        pgtype.Timestamptz
+	Creator        string
+	Spec           []byte
+	Finished       pgtype.Timestamptz
 }
 
 type SchemaVersion struct {
@@ -227,14 +263,15 @@ type Status struct {
 }
 
 type StatusHead struct {
-	UUID       uuid.UUID
-	Name       string
-	CurrentID  int64
-	Updated    pgtype.Timestamptz
-	UpdaterUri string
-	Type       pgtype.Text
-	Version    pgtype.Int8
-	Language   pgtype.Text
+	UUID        uuid.UUID
+	Name        string
+	CurrentID   int64
+	Updated     pgtype.Timestamptz
+	UpdaterUri  string
+	Type        pgtype.Text
+	Version     pgtype.Int8
+	Language    pgtype.Text
+	SystemState pgtype.Text
 }
 
 type StatusRule struct {

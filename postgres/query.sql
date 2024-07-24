@@ -1,5 +1,5 @@
 -- name: GetDocumentForUpdate :one
-SELECT d.uri, d.type, d.current_version, d.deleting, d.main_doc, d.language,
+SELECT d.uri, d.type, d.current_version, d.main_doc, d.language, d.system_state,
        l.uuid as lock_uuid, l.uri as lock_uri, l.created as lock_created,
        l.expires as lock_expires, l.app as lock_app, l.comment as lock_comment,
        l.token as lock_token
@@ -35,6 +35,21 @@ SELECT SUM(num) FROM (
 -- name: GetDocumentACL :many
 SELECT uuid, uri, permissions FROM acl WHERE uuid = $1;
 
+-- name: GetCurrentDocumentVersions :many
+SELECT uuid, current_version, updated
+FROM document
+WHERE uuid = ANY(@uuids::uuid[]);
+
+-- name: GetMultipleStatusHeads :many
+SELECT h.uuid, h.name, h.current_id, h.updated, h.updater_uri, s.version,
+       s.meta_doc_version,
+       CASE WHEN @get_meta::bool THEN s.meta ELSE NULL::jsonb END AS meta
+FROM status_heads AS h
+     INNER JOIN document_status AS s
+           ON s.uuid = h.uuid AND s.name = h.name AND s.id = h.current_id
+WHERE h.uuid = ANY(@uuids::uuid[])
+AND h.name = ANY(@statuses::text[]);
+
 -- name: GetStatuses :many
 SELECT uuid, name, id, version, created, creator_uri, meta
 FROM document_status
@@ -59,10 +74,16 @@ SELECT created, creator_uri, meta, document_data, archived, signature
 FROM document_version
 WHERE uuid = @UUID AND version = @version;
 
+-- name: GetDocumentRow :one
+SELECT uuid, uri, type, created, creator_uri, updated, updater_uri,
+       current_version, main_doc, language, system_state
+FROM document
+WHERE uuid = @uuid;
+
 -- name: GetDocumentInfo :one
 SELECT
         d.uuid, d.uri, d.created, creator_uri, updated, updater_uri, current_version,
-        deleting, main_doc, l.uuid as lock_uuid, l.uri as lock_uri,
+        system_state, main_doc, l.uuid as lock_uuid, l.uri as lock_uri,
         l.created as lock_created, l.expires as lock_expires, l.app as lock_app,
         l.comment as lock_comment, l.token as lock_token
 FROM document as d 
@@ -87,6 +108,112 @@ SELECT pg_advisory_xact_lock(@id::bigint);
 -- name: Notify :exec
 SELECT pg_notify(@channel::text, @message::text);
 
+-- name: InsertDocument :exec
+INSERT INTO document(
+       uuid, uri, type,
+       created, creator_uri, updated, updater_uri, current_version,
+       main_doc, language, system_state
+) VALUES (
+       @uuid, @uri, @type,
+       @created, @creator_uri, @created, @creator_uri, @version,
+       @main_doc, @language, @system_state
+);
+
+-- name: ReadForRestore :one
+SELECT system_state FROM document
+WHERE uuid = @uuid;
+
+-- name: ClearSystemState :exec
+UPDATE document SET system_state = NULL
+WHERE uuid = @uuid AND NOT system_state IS NULL;
+
+-- name: CheckForPendingPurge :one
+SELECT EXISTS (
+       SELECT 1 FROM purge_request
+       WHERE delete_record_id = @delete_record_id
+       AND finished IS NULL
+);
+
+-- name: InsertRestoreRequest :exec
+INSERT INTO restore_request(
+       uuid, delete_record_id, created, creator, spec
+) VALUES(
+       @uuid, @delete_record_id, @created, @creator, @spec
+);
+
+-- name: GetNextRestoreRequest :one
+SELECT r.id, r.uuid, r.delete_record_id, r.created, r.creator, r.spec
+FROM restore_request AS r
+     INNER JOIN delete_record AS dr
+           ON dr.id = r.delete_record_id
+WHERE r.finished IS NULL AND dr.purged IS NULL
+ORDER BY r.id ASC
+FOR UPDATE SKIP LOCKED
+LIMIT 1;
+
+-- name: GetInvalidRestoreRequests :many
+SELECT r.id
+FROM restore_request AS r
+     INNER JOIN delete_record AS dr
+           ON dr.id = r.delete_record_id
+WHERE r.finished IS NULL AND dr.purged IS NOT NULL
+ORDER BY r.id ASC
+FOR UPDATE SKIP LOCKED;
+
+-- name: DropInvalidRestoreRequests :exec
+DELETE FROM restore_request AS rr
+WHERE rr.finished IS NULL
+AND rr.delete_record_id = ANY(
+    SELECT dr.id FROM delete_record AS dr
+    WHERE dr.id = rr.delete_record_id
+    AND dr.purged IS NOT NULL
+);
+
+-- name: FinishRestoreRequest :exec
+UPDATE restore_request
+SET finished = @finished
+WHERE id = @id;
+
+-- name: InsertPurgeRequest :exec
+INSERT INTO purge_request(
+       uuid, delete_record_id, created, creator
+) VALUES(
+       @uuid, @delete_record_id, @created, @creator
+);
+
+-- name: GetNextPurgeRequest :one
+SELECT p.id, p.uuid, p.delete_record_id, p.created
+FROM purge_request AS p
+     INNER JOIN delete_record AS dr
+           ON dr.id = p.delete_record_id
+WHERE p.finished IS NULL
+      AND dr.purged IS NULL
+      AND dr.finalised IS NOT NULL
+ORDER BY p.id ASC
+FOR UPDATE SKIP LOCKED
+LIMIT 1;
+
+-- name: DropRedundantPurgeRequests :exec
+DELETE FROM purge_request AS pr
+WHERE pr.finished IS NULL
+AND pr.delete_record_id = ANY(
+    SELECT dr.id FROM delete_record AS dr
+    WHERE dr.id = pr.delete_record_id
+    AND dr.purged IS NOT NULL
+);
+
+-- name: PurgeDeleteRecordDetails :exec
+UPDATE delete_record SET
+       meta = NULL, acl = NULL, heads = NULL, version = 0,
+       language = NULL, 
+       purged = @purged_time
+WHERE id = @id;
+
+-- name: FinishPurgeRequest :exec
+UPDATE purge_request
+SET finished = @finished
+WHERE id = @id;
+
 -- name: UpsertDocument :exec
 INSERT INTO document(
        uuid, uri, type,
@@ -106,19 +233,19 @@ INSERT INTO document(
 -- name: CreateDocumentVersion :exec
 INSERT INTO document_version(
        uuid, version,
-       created, creator_uri, meta, document_data, archived
+       created, creator_uri, meta, document_data, archived, language
 ) VALUES (
        @uuid, @version,
-       @created, @creator_uri, @meta, @document_data, false
+       @created, @creator_uri, @meta, @document_data, false, @language
 );
 
 -- name: CreateStatusHead :exec
 INSERT INTO status_heads(
        uuid, name, type, version, current_id,
-       updated, updater_uri, language
+       updated, updater_uri, language, system_state
 ) VALUES (
        @uuid, @name, @type::text, @version::bigint, @id::bigint,
-       @created, @creator_uri, @language::text
+       @created, @creator_uri, @language::text, @system_state
 )
 ON CONFLICT (uuid, name) DO UPDATE
    SET updated = @created,
@@ -165,33 +292,64 @@ WHERE d.uuid = @uuid;
 SELECT current_version FROM document
 WHERE main_doc = @uuid;
 
--- name: DeleteDocument :exec
-SELECT delete_document(
-       @uuid::uuid, @uri::text, @record_id::bigint
+-- name: DeleteDocumentEntry :exec
+DELETE FROM document WHERE uuid = @uuid;
+
+-- name: InsertDeletionPlaceholder :exec
+insert into document(
+       uuid, uri, type, created, creator_uri, updated, updater_uri,
+       current_version, system_state
+) values (
+       @uuid, @uri, '', now(), '', now(), '', @record_id, 'deleting'
 );
 
 -- name: InsertDeleteRecord :one
 INSERT INTO delete_record(
        uuid, uri, type, version, created, creator_uri, meta,
-       main_doc, language
+       main_doc, language, meta_doc_record, heads, acl
 ) VALUES(
        @uuid, @uri, @type, @version, @created, @creator_uri, @meta,
-       @main_doc, @language
+       @main_doc, @language, @meta_doc_record, @heads, @acl
 ) RETURNING id;
+
+-- name: ListDeleteRecords :many
+SELECT id, uuid, uri, type, version, created, creator_uri, meta,
+       main_doc, language, meta_doc_record, finalised, purged
+FROM delete_record AS r
+WHERE (sqlc.narg('uuid')::uuid IS NULL OR r.uuid = @uuid)
+      AND (@before_id::bigint = 0 OR r.id < @before_id)
+      AND (sqlc.narg('before_time')::timestamptz IS NULL OR r.created < @before_time)
+ORDER BY r.id DESC;
+
+-- name: GetDeleteRecordForUpdate :one
+SELECT id, uuid, uri, type, version, created, creator_uri, meta,
+       main_doc, language, meta_doc_record, heads, finalised, purged
+FROM delete_record
+WHERE id = @id AND uuid = @uuid
+FOR UPDATE;
+
+-- name: GetVersionLanguage :one
+SELECT language FROM document_version
+WHERE uuid = @uuid AND version = @version;
 
 -- name: GetDocumentStatusForArchiving :one
 SELECT
         s.uuid, s.name, s.id, s.version, s.created, s.creator_uri, s.meta,
-        p.signature AS parent_signature, v.signature AS version_signature
+        p.signature AS parent_signature, v.signature AS version_signature,
+        d.type, v.language, s.meta_doc_version
 FROM document_status AS s
-     INNER JOIN document_version AS v
+     INNER JOIN document AS d
+           ON d.uuid = s.uuid
+     LEFT JOIN document_version AS v
            ON v.uuid = s.uuid
               AND v.version = s.version
-              AND v.signature IS NOT NULL
      LEFT JOIN document_status AS p
           ON p.uuid = s.uuid AND p.name = s.name AND p.id = s.id-1
 WHERE s.archived = false
+-- Any parent has to have been archived.
 AND (s.id = 1 OR p.archived = true)
+-- Accept null signature for the referenced version if we have a nil version.
+AND (s.version = -1 OR v.signature IS NOT NULL)
 ORDER BY s.created
 FOR UPDATE OF s SKIP LOCKED
 LIMIT 1;
@@ -199,10 +357,13 @@ LIMIT 1;
 -- name: GetDocumentVersionForArchiving :one
 SELECT
         v.uuid, v.version, v.created, v.creator_uri, v.meta, v.document_data,
-        p.signature AS parent_signature
+        p.signature AS parent_signature, d.main_doc, d.uri, d.type,
+        v.language AS language
 FROM document_version AS v
      LEFT JOIN document_version AS p
           ON p.uuid = v.uuid AND p.version = v.version-1
+     INNER JOIN document AS d
+          ON d.uuid = v.uuid
 WHERE v.archived = false
 AND (v.version = 1 OR p.archived = true)
 ORDER BY v.created
@@ -210,15 +371,20 @@ FOR UPDATE OF v SKIP LOCKED
 LIMIT 1;
 
 -- name: GetDocumentForDeletion :one
-SELECT uuid, current_version AS delete_record_id FROM document
-WHERE deleting = true
-ORDER BY created
-FOR UPDATE SKIP LOCKED
+SELECT dr.id, dr.uuid, dr.heads, dr.acl, dr.version
+FROM delete_record AS dr
+WHERE dr.finalised IS NULL
+ORDER BY dr.created
+FOR UPDATE SKIP LOCKED -- locks both rows
 LIMIT 1;
 
--- name: FinaliseDelete :execrows
+-- name: FinaliseDeleteRecord :exec
+UPDATE delete_record SET finalised = @finalised
+WHERE uuid = @uuid AND id = @id;
+
+-- name: FinaliseDocumentDelete :execrows
 DELETE FROM document
-WHERE uuid = @uuid AND deleting = true;
+WHERE uuid = @uuid AND system_state = 'deleting';
 
 -- name: SetDocumentVersionAsArchived :exec
 UPDATE document_version
@@ -228,7 +394,7 @@ WHERE uuid = @uuid AND version = @version;
 -- name: SetDocumentStatusAsArchived :exec
 UPDATE document_status
 SET archived = true, signature = @signature::text
-WHERE uuid = @uuid AND id = @id;
+WHERE uuid = @uuid AND name = @name AND id = @id;
 
 -- name: GetSigningKeys :many
 SELECT kid, spec FROM signing_keys;
@@ -246,7 +412,7 @@ VALUES (@uuid, @uri, @permissions::text[])
 DELETE FROM acl WHERE uuid = @uuid AND uri = @uri;
 
 -- name: CheckPermissions :one
-SELECT (acl.uri IS NOT NULL) = true AS has_access
+SELECT (acl.uri IS NOT NULL) = true AS has_access, d.system_state
 FROM document AS d
      LEFT JOIN acl
           ON (acl.uuid = d.uuid OR acl.uuid = d.main_doc)
@@ -254,14 +420,25 @@ FROM document AS d
           AND @permissions::text[] && permissions
 WHERE d.uuid = @uuid;
 
+-- name: BulkCheckPermissions :many
+SELECT d.uuid
+FROM document AS d
+     INNER JOIN acl
+          ON (acl.uuid = d.uuid OR acl.uuid = d.main_doc)
+          AND acl.uri = ANY(@uri::text[])
+          AND @permissions::text[] && permissions
+WHERE d.uuid = ANY(@uuids::uuid[]);
+
 -- name: InsertACLAuditEntry :exec
 INSERT INTO acl_audit(
        uuid, type, updated,
-       updater_uri, state, language
+       updater_uri, state, language,
+       system_state
 )
 SELECT
        @uuid::uuid, @type, @updated::timestamptz,
-       @updater_uri::text, json_agg(l), @language::text
+       @updater_uri::text, json_agg(l), @language::text,
+       @system_state
 FROM (
        SELECT uri, permissions
        FROM acl
@@ -427,15 +604,15 @@ WHERE enabled;
 -- name: InsertIntoEventLog :one
 INSERT INTO eventlog(
        event, uuid, type, timestamp, updater, version, status, status_id, acl,
-       language, old_language, main_doc
+       language, old_language, main_doc, system_state
 ) VALUES (
        @event, @uuid, @type, @timestamp, @updater, @version, @status, @status_id, @acl,
-       @language, @old_language, @main_doc
+       @language, @old_language, @main_doc, @system_state
 ) RETURNING id;
 
 -- name: GetEventlog :many
 SELECT id, event, uuid, timestamp, type, version, status, status_id, acl, updater,
-       language, old_language, main_doc
+       language, old_language, main_doc, system_state
 FROM eventlog
 WHERE id > @after
 ORDER BY id ASC
@@ -455,7 +632,8 @@ ORDER BY id DESC LIMIT 1;
 -- name: GetCompactedEventlog :many
 SELECT
         w.id, w.event, w.uuid, w.timestamp, w.type, w.version, w.status,
-        w.status_id, w.acl, w.updater, w.language, w.old_language, w.main_doc
+        w.status_id, w.acl, w.updater, w.language, w.old_language, w.main_doc,
+        w.system_state
 FROM (
      SELECT DISTINCT ON (
             e.uuid,
